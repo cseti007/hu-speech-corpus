@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Secrets — never commit
+.hf_token
+*.token
+
+# Data lives elsewhere on the SSD; never accidentally commit if someone copies it in
+raw/
+processed/
+cache/
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.opus
+*.m4a
+*.parquet
+*.tar
+*.tar.gz
+*.jsonl
+
+# OS
+.DS_Store
+Thumbs.db
