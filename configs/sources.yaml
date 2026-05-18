@@ -1,0 +1,273 @@
+# Hungarian speech corpus sources
+# Per-source metadata: license, size estimate, priority, storage path, status.
+# Loaded by download / manifest scripts in bin/.
+
+storage_root: /home/cseti/datassd2/hu-speech-corpus
+
+sources:
+
+  yodas_hu000:
+    description: YODAS Hungarian manual-caption subset (CMU/ESPnet, human YouTube captions)
+    hf_repo: espnet/yodas
+    hf_config: hu000
+    license: CC-BY
+    license_origin: YouTube CC-BY filter at scrape time
+    hours: 181.76
+    audio_format: FLAC 16 kHz mono
+    estimated_size_gb: 15
+    actual_size_gb: 35
+    actual_utterance_count: 167705
+    priority: 1
+    path: raw/yodas_hu000
+    status: downloaded_extracted
+    notes: |
+      Manual captions = human-uploaded YouTube subtitles, not ASR-generated.
+      Higher quality anchor than MOSEL pseudo-labels.
+
+  librivox_hu:
+    description: LibriVox Hungarian public-domain audiobooks (only 2 books exist!)
+    source_url: archive.org (LibriVox uploads)
+    license: Public Domain
+    hours: 18.8
+    audio_format: MP3 (source, canonical only after dedup)
+    estimated_size_gb: 1.55
+    actual_size_gb: 1.1
+    actual_file_count: 99
+    priority: 2
+    path: raw/librivox_hu
+    status: downloaded
+    items:
+      - identifier: egri_csillagok_1101_librivox
+        title: Egri csillagok (Gardonyi)
+        duration: "17:28:06"
+        size_mb: 1440
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: janos_vitez_dii_librivox
+        title: Janos Vitez (Petofi)
+        duration: "01:18:43"
+        size_mb: 108
+        license_url: http://creativecommons.org/licenses/publicdomain/
+    notes: |
+      LibriVox HU is much smaller than initially expected: only 2 books total.
+      Both texts are also PD and available on MEK (mek.oszk.hu) for force-alignment
+      during TTS phase. Audio quality: single narrator, clean, long-form.
+
+  podcasts_hu_cc:
+    description: Hungarian podcasts under free licenses (archive.org)
+    source_url: archive.org
+    license: Mixed CC-BY / CC0 / PD (per item)
+    hours: 53
+    audio_format: VBR MP3
+    estimated_size_gb: 3.65
+    actual_size_gb: 3.3
+    actual_file_count: 42
+    priority: 2
+    path: raw/podcasts_hu
+    status: downloaded
+    items:
+      - identifier: hetvegi-kotekedo
+        title: Hetvegi Kotekedo (Tilos Radio)
+        episodes: 33
+        duration: "31:17"
+        size_mb: 2150
+        license_url: https://creativecommons.org/licenses/by/4.0/
+      - identifier: szabad_europa_podcast_s01e01
+        title: "Szabad Europa - s01e01 Forro osz"
+        duration: "1:35"
+        size_mb: 245
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s01e02
+        title: "Szabad Europa - s01e02"
+        duration: "2:11"
+        size_mb: 132
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s01e03
+        title: "Szabad Europa - s01e03 Muzeumokba"
+        duration: "2:44"
+        size_mb: 153
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s01e04
+        title: "Szabad Europa - s01e04 Helyi adas Szentendre"
+        duration: "2:01"
+        size_mb: 108
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s01e05
+        title: "Szabad Europa - s01e05 Utalni sokkal egyszerubb"
+        duration: "2:12"
+        size_mb: 134
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s01e06
+        title: "Szabad Europa - s01e06 Eselyegyenlotlensegek"
+        duration: "2:39"
+        size_mb: 186
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s02e01
+        title: "Szabad Europa - s02e01 Hatatlepo"
+        duration: "2:55"
+        size_mb: 185
+        license_url: http://creativecommons.org/publicdomain/mark/1.0/
+      - identifier: szabad_europa_podcast_s02e03
+        title: "Szabad Europa - s02e03 Klimahiszti"
+        duration: "3:01"
+        size_mb: 214
+        license_url: http://creativecommons.org/publicdomain/zero/1.0/
+      - identifier: szabad_europa_podcast_s02e04
+        title: "Szabad Europa - s02e04 Kozossegi terek"
+        duration: "2:28"
+        size_mb: 180
+        license_url: https://creativecommons.org/licenses/by/4.0/
+    notes: |
+      Two source clusters:
+      1. Hetvegi Kotekedo (Tilos Radio) — conversational dialogue, CC-BY.
+      2. Szabad Europa Podcast — interview format, 9 free-license episodes (PD/CC0/CC-BY).
+         (s02e02 skipped: no license declared on archive.org.)
+      Search archive.org periodically for new HU free-license audio items to add here.
+
+  # Sources that DO NOT meet the free-license criteria (documented for clarity, not used):
+  not_usable:
+    ted_talks:
+      reason: CC BY-NC-ND 4.0 — NC excludes model training
+    mindentudas_egyeteme:
+      reason: CC BY-NC-ND 2.5 Hungary — NC + ND, same restriction as TED
+    nava:
+      reason: Streaming-only, no CC license granted
+    nfi_filmarchive:
+      reason: Streaming-only, no CC license granted
+    mek_oszk_default:
+      reason: Default policy is personal/non-commercial; only items with explicit CC tag are usable
+
+  mosel_hu_transcripts:
+    description: MOSEL Hungarian Whisper-large-v3 pseudo-transcripts (FBK)
+    hf_repo: FBK-MT/mosel
+    hf_subdir: hu/
+    license: CC-BY
+    hours: 11660
+    estimated_size_gb: 1
+    actual_size_gb: 1.17
+    actual_utterance_count: 2314161  # 2.3M voxpopuli + 1344 ytc
+    priority: 3
+    path: raw/mosel_hu/transcripts
+    status: downloaded
+    notes: |
+      Transcripts only; audio must be fetched separately from VoxPopuli / YouTubeCommons.
+      Filter via hall_repeated_ngrams, hall_long_word, hall_frequent_single_word flags.
+
+  mosel_hu_voxpopuli:
+    description: MOSEL HU audio — VoxPopuli portion (European Parliament HU recordings)
+    hf_repo: facebook/voxpopuli
+    hf_config: hu
+    license: CC0
+    hours: 4400
+    audio_format: FLAC 16 kHz mono
+    estimated_size_gb: 285
+    priority: 4
+    path: raw/mosel_hu/voxpopuli_hu
+    status: superseded_by_voxpopuli_hu_unlabeled  # actual download is under voxpopuli_hu_unlabeled
+
+  voxpopuli_hu_labeled:
+    description: VoxPopuli HU labeled (transcribed_data partition) — HF parquet
+    hf_repo: facebook/voxpopuli
+    hf_subdir: hu/
+    license: CC0
+    hours: 63
+    utterance_count: 20306
+    audio_format: parquet-internal WAV 16kHz mono
+    actual_size_gb: 10.78
+    priority: 4
+    path: raw/voxpopuli_hu_labeled
+    status: downloaded
+    notes: |
+      6 parquet files (4 train + 1 test + 1 validation). 20,306 utterances.
+      Audio embedded as bytes inside parquet rows. Includes gender, speaker_id,
+      is_gold_transcript metadata. CC0 licensed.
+
+  voxpopuli_hu_unlabeled:
+    description: VoxPopuli HU unlabeled audio (full session ogg files) — github script
+    source_url: https://dl.fbaipublicfiles.com/voxpopuli/audios/hu_<year>[_2].tar
+    license: CC0
+    hours: 18200  # estimated from 17,297 sessions × ~1h avg
+    session_count: 17297
+    audio_format: Ogg Vorbis 16 kHz mono ~32 kbps
+    actual_size_gb: 297
+    priority: 5
+    path: raw/voxpopuli_hu_unlabeled
+    status: downloaded
+    notes: |
+      24 tarballs (V1 + V2, years 2009-2020). 17,297 session ogg files in
+      raw_audios/hu/<year>/<session_id>_hu.ogg. ~1 hour average per session.
+      MOSEL transcripts reference these via session_id matching.
+    notes: |
+      Includes both labeled (63h transcribed) and unlabeled HU partition.
+      Re-encode to Opus 32 kbps for ~6x space saving.
+
+  mosel_hu_youtubecommons:
+    description: MOSEL HU audio — YouTube Commons CC-BY portion
+    source_url: yt-dlp from MOSEL-provided video IDs
+    license: CC-BY (per video, YouTube filter at scrape)
+    hours: 13000
+    audio_format: variable (yt source)
+    estimated_size_gb_flac: 800
+    estimated_size_gb_opus32k: 180
+    priority: 5
+    path: raw/mosel_hu/youtubecommons_hu
+    status: not_downloaded
+    notes: |
+      Largest single chunk. Recommend direct Opus 32 kbps mono extraction
+      via yt-dlp to skip FLAC intermediate.
+
+  parliament_hu_gray:
+    description: |
+      Hungarian Parliament (Orszaggyules) session recordings — GRAY ZONE license status.
+      Speech CONTENT is per Szjt. 1.§ (4) "hivatalos kozlemeny" → not copyright protected,
+      BUT recordings have a 50-year producer's related right (Szjt. 73.§). No explicit
+      CC license granted by parlament.hu. User decision: include as secondary source
+      with full awareness of legal ambiguity. Practical risk: low (no enforcement
+      precedent for ML training use). Stored in a dedicated dir to keep separable.
+    source_url: http://plenaris.parlament.hu:1935/edgelive/smil:mkogyplen.smil/playlist.m3u8
+    archive_url: https://www.parlament.hu/videoarchivum
+    license: GRAY_ZONE (content PD via Szjt 1.§(4), recording protected by 50-yr neighboring right)
+    hours_estimated: "varies, ~100-200h per session year"
+    audio_format: HLS stream, extract audio via ffmpeg
+    estimated_size_gb_per_year: 20-50
+    priority: 8 (last; secondary source after free-license sources exhausted)
+    path: raw/parliament_hu_gray
+    status: not_downloaded
+    tooling: |
+      - HLS m3u8 endpoint above (live + archive)
+      - Existing tool: https://github.com/fodi/parlament-dl
+      - Audio extraction: ffmpeg -i <ts segments> -vn -acodec copy out.aac
+    notes: |
+      ALTERNATIVE: VoxPopuli HU (CC0) already covers EU Parliament Hungarian interpretations
+      with 63h labeled + ~4400h unlabeled. That covers most parliament-style register cleanly.
+      Only download national Parliament HU recordings if VoxPopuli register is insufficient.
+
+  filmhiradok_1931_1943:
+    description: Hungarian World Newsreel archive (Magyar Vilaghirado)
+    source_url: https://filmhiradokonline.hu/
+    license: Public Domain (likely, by age; verify per item)
+    hours_estimated: 30-60
+    estimated_size_gb: 5
+    priority: 6
+    path: raw/filmhiradok_1931_1943
+    status: not_downloaded
+    notes: |
+      Archaic register, formal narration. Optional domain-bonus data.
+      Audio extracted from video via ffmpeg.
+
+# Excluded from training (used for evaluation only):
+eval_only:
+  common_voice_hu:
+    description: Mozilla Common Voice Hungarian
+    reason: Quality inconsistent for training-grade use
+    license: CC0
+    use_for: validation only
+  fleurs_hu:
+    description: Google FLEURS Hungarian
+    reason: 12-hour benchmark set
+    license: CC-BY
+    use_for: held-out test set
+  voxpopuli_hu_labeled:
+    description: VoxPopuli HU transcribed (63h labeled portion)
+    reason: Validation-set scale
+    license: CC0
+    use_for: held-out test set
