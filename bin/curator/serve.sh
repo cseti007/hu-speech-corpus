@@ -8,11 +8,16 @@
 #   bash bin/curator/serve.sh /abs/path/file.parquet  # absolute path
 #
 # Env vars:
-#   CURATOR_PORT      listen port (default 8002)
-#   CURATOR_HOST      bind host (default 127.0.0.1)
-#   HU_CORPUS_ROOT    data root — REQUIRED (no default)
-#   PYTHON            python interpreter (default: $(which python))
-#   CURATOR_PARQUET   set directly to override the arg-based resolution
+#   CURATOR_PORT       listen port (default 8002)
+#   CURATOR_HOST       bind host (default 127.0.0.1)
+#   HU_CORPUS_ROOT     data root — REQUIRED (no default)
+#   PYTHON             python interpreter (default: $(which python))
+#   CURATOR_PARQUET    set directly to override the arg-based resolution
+#   CURATOR_PARQUETS   comma-separated allow-list of parquet basenames for
+#                      the file picker. Empty = show every parquet in
+#                      processed/parquets/ + processed/manifests/. Set this
+#                      to hide legacy parquets (e.g. manifest_poc_100h.parquet).
+#                      Default below: the 5 canonical sets + full v5.
 
 set -euo pipefail
 
@@ -85,6 +90,13 @@ if ! "${PYTHON}" -c "import flask, duckdb, pyarrow" 2>/dev/null; then
   exit 2
 fi
 
-export CURATOR_PARQUET
+# Default file-picker allow-list. The 5 canonical sets + full v5. Comment
+# out / unset to show every parquet under processed/{parquets,manifests}/.
+: "${CURATOR_PARQUETS:=smoke.parquet,test.parquet,train.parquet,dev.parquet,manifest_v5.parquet}"
+
+export CURATOR_PARQUET CURATOR_PARQUETS
 echo "[curator] loading: ${CURATOR_PARQUET}" >&2
+if [[ -n "${CURATOR_PARQUETS:-}" ]]; then
+  echo "[curator] picker filter: ${CURATOR_PARQUETS}" >&2
+fi
 exec "${PYTHON}" "${SCRIPT_DIR}/app.py"

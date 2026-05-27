@@ -48,6 +48,7 @@ const state = {
   pathMeta: {},            // path -> {type, parent?, label?, sortable}
   defaultColumns: [],      // from /api/schema
   visiblePaths: [],        // user's choice, ordered
+  colWidths: {},           // path -> px width (persisted globally)
   filters: { source: [], q: "" },
   sort: "utterance_id",
   dir: "asc",
@@ -56,15 +57,60 @@ const state = {
   totalRows: 0,
 };
 
+// One global column choice across ALL parquets. Switching parquets just
+// filters the global list to whichever paths exist in the new schema —
+// see switchParquet(). This was a per-parquet key originally; 2026-05-27
+// the user asked for a single shared setting.
 const LS_KEY = "curator.v2.cols";
+const LS_WIDTHS = "curator.v2.widths";  // global path → px width
 
-function lsKeyFor(parquetName) {
-  return `${LS_KEY}::${parquetName || "default"}`;
+// Default px widths by column kind. Used when the user hasn't set one yet.
+const DEFAULT_COL_WIDTHS = {
+  _audio_player: 360,
+  utterance_id: 260,
+  source: 140,
+  duration_sec: 70,
+  audio_path: 280,
+  refined_audio_path: 200,
+  "transcripts.source_caption": 280,
+  "transcripts.source_caption_normalized": 280,
+};
+const DEFAULT_COL_WIDTH_FALLBACK = 140;
+
+function defaultWidthFor(path) {
+  if (DEFAULT_COL_WIDTHS[path]) return DEFAULT_COL_WIDTHS[path];
+  // Heuristics by suffix: long string columns get wider
+  if (path.startsWith("transcripts.")) return 260;
+  if (path.endsWith("_path") || path.endsWith("audio_path")) return 240;
+  return DEFAULT_COL_WIDTH_FALLBACK;
+}
+
+function loadColumnWidths() {
+  try {
+    const raw = localStorage.getItem(LS_WIDTHS);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") return obj;
+    }
+  } catch {}
+  return {};
+}
+
+function saveColumnWidths(widths) {
+  try {
+    localStorage.setItem(LS_WIDTHS, JSON.stringify(widths));
+  } catch {}
+}
+
+// Path can contain dots/brackets that are invalid in CSS class names
+// (e.g. "quality_flags.dnsmos_ovrl"). Sanitize for class use.
+function pathToCssClass(path) {
+  return "col-" + path.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 function loadVisibleColumns(parquetName, fallback) {
   try {
-    const raw = localStorage.getItem(lsKeyFor(parquetName));
+    const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length) return arr;
@@ -75,7 +121,7 @@ function loadVisibleColumns(parquetName, fallback) {
 
 function saveVisibleColumns(parquetName, paths) {
   try {
-    localStorage.setItem(lsKeyFor(parquetName), JSON.stringify(paths));
+    localStorage.setItem(LS_KEY, JSON.stringify(paths));
   } catch {}
 }
 
@@ -311,6 +357,10 @@ function renderHeaderMeta(stats) {
     `${stats.parquet_name} — ${meta}`;
 }
 
+function widthFor(path) {
+  return state.colWidths[path] || defaultWidthFor(path);
+}
+
 function renderTableHeader() {
   const head = $("#rows-head");
   const cells = state.visiblePaths.map(path => {
@@ -321,10 +371,13 @@ function renderTableHeader() {
       ? (state.dir === "asc" ? "sort-asc" : "sort-desc")
       : "";
     const labelText = path === "_audio_player" ? "audio" : path;
-    if (sortable) {
-      return `<th class="sortable ${sortClass}" data-sort="${escapeHtml(path)}">${escapeHtml(labelText)}</th>`;
-    }
-    return `<th>${escapeHtml(labelText)}</th>`;
+    const cls = pathToCssClass(path);
+    const w = widthFor(path);
+    const sortAttrs = sortable
+      ? ` class="${cls} sortable ${sortClass}" data-sort="${escapeHtml(path)}"`
+      : ` class="${cls}"`;
+    const handle = `<span class="col-resize-handle" data-path="${escapeHtml(path)}" title="Drag to resize"></span>`;
+    return `<th${sortAttrs} style="width:${w}px;min-width:${w}px;max-width:${w}px"><span class="col-label">${escapeHtml(labelText)}</span>${handle}</th>`;
   });
   head.innerHTML = `<tr>${cells.join("")}</tr>`;
 }
@@ -332,13 +385,56 @@ function renderTableHeader() {
 function renderTableRows(data) {
   const body = $("#rows-body");
   const html = data.rows.map(r => {
-    const cells = state.visiblePaths.map(path =>
-      `<td class="col-${escapeHtml(path)}">${renderCell(path, r)}</td>`
-    ).join("");
+    const cells = state.visiblePaths.map(path => {
+      const cls = pathToCssClass(path);
+      const w = widthFor(path);
+      return `<td class="${cls}" style="width:${w}px;min-width:${w}px;max-width:${w}px">${renderCell(path, r)}</td>`;
+    }).join("");
     return `<tr>${cells}</tr>`;
   }).join("");
   body.innerHTML = html || `<tr><td colspan="${state.visiblePaths.length}" class="empty">no rows</td></tr>`;
 }
+
+// Drag-to-resize for column headers. Mousedown on the handle starts a
+// drag; mousemove updates that column's width; mouseup persists.
+let _drag = null;
+document.addEventListener("mousedown", (ev) => {
+  const handle = ev.target.closest(".col-resize-handle");
+  if (!handle) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const th = handle.closest("th");
+  const path = handle.dataset.path;
+  _drag = {
+    path,
+    th,
+    startX: ev.clientX,
+    startWidth: th.getBoundingClientRect().width,
+  };
+  document.body.classList.add("col-resizing");
+});
+document.addEventListener("mousemove", (ev) => {
+  if (!_drag) return;
+  const dx = ev.clientX - _drag.startX;
+  const newW = Math.max(50, Math.round(_drag.startWidth + dx));
+  // Apply to the th and all td.<cls> cells
+  const cls = pathToCssClass(_drag.path);
+  document.querySelectorAll(`th.${cls}, td.${cls}`).forEach(el => {
+    el.style.width = newW + "px";
+    el.style.minWidth = newW + "px";
+    el.style.maxWidth = newW + "px";
+  });
+  _drag.lastWidth = newW;
+});
+document.addEventListener("mouseup", () => {
+  if (!_drag) return;
+  if (_drag.lastWidth) {
+    state.colWidths[_drag.path] = _drag.lastWidth;
+    saveColumnWidths(state.colWidths);
+  }
+  document.body.classList.remove("col-resizing");
+  _drag = null;
+});
 
 function renderPagination(data) {
   const total = data.total;
@@ -522,15 +618,19 @@ async function switchParquet(name) {
   state.paths = flat.paths;
   state.pathMeta = flat.meta;
   // Filter user's saved choice to paths still present in the new parquet.
+  // Audio player is ALWAYS in the default fallback — listening to clips is
+  // the most-common curator action, so the inline player should be visible
+  // on first load. User can still hide it via Columns dialog.
   const validDefault = state.defaultColumns.filter(p => state.paths.includes(p));
-  const fallback = validDefault.length ? validDefault : state.paths.slice(0, 5);
+  const fallback = validDefault.length
+    ? [...validDefault, "_audio_player"]
+    : [...state.paths.slice(0, 4), "_audio_player"];
   const saved = loadVisibleColumns(state.parquetName, fallback);
-  // Also drop saved paths that don't exist in this parquet, and ensure
-  // audio_player stays only if user picked it.
   state.visiblePaths = saved.filter(p =>
     p === "_audio_player" || state.paths.includes(p)
   );
   if (!state.visiblePaths.length) state.visiblePaths = fallback;
+  state.colWidths = loadColumnWidths();
   // Reload sources + stats + rows
   await refreshSources();
   await refreshStats();
