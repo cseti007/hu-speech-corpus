@@ -157,10 +157,14 @@ through three explicit stages:
 Output spot-checked **in the curator UI** at EACH stage — values
 inspected against known clips before promoting.
 
-**Light-touch exception:** for pure-function changes where the smoke
-set fully covers the function's input domain (e.g. a text normalizer
-that only touches `transcripts.source_caption`), dev may be skipped
-with an explicit "smoke covers it" note. Default is full ladder.
+**No exception.** Dev is ~120× larger than smoke (27,890 vs ~280 clips),
+so it's the cheapest way to surface input-space edge cases that the
+50-per-source smoke sample missed — regardless of how "pure" the
+function looks. Spend the 2 minutes on dev before committing to the
+full cascade.
+
+State the stage out loud each time ("smoke validated → dev next",
+"dev validated → full cascade") so the gate is auditable.
 
 The `smoke` set is the smoke-test bed. The **`dev` set**
 (`processed/parquets/dev.parquet`, 100h multi-source) is a different
