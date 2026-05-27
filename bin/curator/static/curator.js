@@ -370,14 +370,21 @@ function renderTableHeader() {
     const sortClass = state.sort === path
       ? (state.dir === "asc" ? "sort-asc" : "sort-desc")
       : "";
-    const labelText = path === "_audio_player" ? "audio" : path;
+    // Header shows just the leaf name (e.g. `dnsmos_ovrl` instead of
+    // `quality_flags.dnsmos_ovrl`). Subfield names are unique across
+    // STRUCT parents in practice. The full path is preserved as a tooltip
+    // (`title` attr) so the user can still see the full lineage on hover.
+    const leafLabel = path === "_audio_player" ? "audio"
+      : path.includes(".") ? path.split(".").pop()
+      : path;
     const cls = pathToCssClass(path);
     const w = widthFor(path);
+    const titleAttr = path === "_audio_player" ? "" : ` title="${escapeHtml(path)}"`;
     const sortAttrs = sortable
       ? ` class="${cls} sortable ${sortClass}" data-sort="${escapeHtml(path)}"`
       : ` class="${cls}"`;
     const handle = `<span class="col-resize-handle" data-path="${escapeHtml(path)}" title="Drag to resize"></span>`;
-    return `<th${sortAttrs} style="width:${w}px;min-width:${w}px;max-width:${w}px"><span class="col-label">${escapeHtml(labelText)}</span>${handle}</th>`;
+    return `<th${sortAttrs}${titleAttr} style="width:${w}px;min-width:${w}px;max-width:${w}px"><span class="col-label">${escapeHtml(leafLabel)}</span>${handle}</th>`;
   });
   head.innerHTML = `<tr>${cells.join("")}</tr>`;
 }
