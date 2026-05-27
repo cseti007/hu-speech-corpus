@@ -53,10 +53,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
+
+
+# ============================================================
+# Hungarian-aware text normalizer
+# ============================================================
+# Replaces the HF VoxPopuli `normalized_text` field whose normalizer strips
+# Hungarian diacritics (see e.g. the row where "Bízom benne" becomes
+# "bzom benne" — the "í" is lost). Our normalizer:
+#   - NFC normalize (combining marks → composed)
+#   - Lowercase
+#   - Drop punctuation but preserve letters / digits / whitespace
+#   - Collapse repeated whitespace
+# Hungarian diacritics (á é í ó ö ő ú ü ű) are letters in Unicode → preserved.
+
+_PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_hu(text: str | None) -> str | None:
+    if not text:
+        return text
+    text = unicodedata.normalize("NFC", text).lower()
+    text = _PUNCT_RE.sub("", text)
+    text = _WS_RE.sub(" ", text).strip()
+    return text
 
 DATA_ROOT = Path("/home/cseti/datassd2/hu-speech-corpus")
 MANIFESTS_DIR = DATA_ROOT / "processed" / "manifests"
@@ -178,12 +205,20 @@ def lean_row(row: dict,
 
     # Always derive hf_split for vp_labeled from the ORIGINAL parquet shard
     # path (this lookup must happen before any audio_path override).
+    # Also: override transcripts.source_caption_normalized with our own
+    # Hungarian-aware normalizer — the HF `normalized_text` field strips
+    # diacritics (e.g. "Bízom benne" → "bzom benne", losing the "í").
     if out["source"] == "voxpopuli_hu_labeled":
         hf_split = _vp_labeled_hf_split(out.get("audio_path"))
         if hf_split is not None:
             qf = dict(out.get("quality_flags") or {})
             qf["hf_split"] = hf_split
             out["quality_flags"] = qf
+        tr = dict(out.get("transcripts") or {})
+        raw = tr.get("source_caption")
+        if raw:
+            tr["source_caption_normalized"] = normalize_hu(raw)
+            out["transcripts"] = tr
 
     if (yodas2_chunks is not None
             and out["source"] == "yodas2_hu000"
