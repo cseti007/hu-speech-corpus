@@ -48,6 +48,17 @@ PARQUET_DIRS = [
     DATA_ROOT / "processed" / "manifests",
 ]
 
+# Optional filter on which parquets the file picker offers. Set
+# CURATOR_PARQUETS env var to a comma-separated list of basenames
+# (e.g. "smoke.parquet,dev.parquet,test.parquet,train.parquet,manifest_v5.parquet")
+# to limit the picker to those entries. Empty / unset = show every parquet
+# in PARQUET_DIRS.
+_INCLUDE_RAW = os.environ.get("CURATOR_PARQUETS", "").strip()
+PARQUET_INCLUDE: set[str] | None = (
+    {x.strip() for x in _INCLUDE_RAW.split(",") if x.strip()}
+    if _INCLUDE_RAW else None
+)
+
 # Default parquet on startup. Can be overridden by CURATOR_PARQUET env var
 # or by selecting a different parquet via ?parquet= or POST /api/load.
 DEFAULT_PARQUET = Path(os.environ.get(
@@ -94,12 +105,17 @@ class CuratorState:
         self._active: str | None = None
 
     def list_parquets(self) -> list[dict]:
-        """Scan known dirs, return sorted list of parquet metadata."""
+        """Scan known dirs, return sorted list of parquet metadata.
+
+        If CURATOR_PARQUETS env var is set (PARQUET_INCLUDE), filters to
+        just those basenames. Otherwise lists everything under PARQUET_DIRS."""
         out: list[dict] = []
         for d in PARQUET_DIRS:
             if not d.is_dir():
                 continue
             for p in sorted(d.glob("*.parquet")):
+                if PARQUET_INCLUDE is not None and p.name not in PARQUET_INCLUDE:
+                    continue
                 out.append({
                     "name": p.name,
                     "path": str(p),

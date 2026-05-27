@@ -203,6 +203,7 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  box-sizing: border-box;
 }
 .rows-table th {
   font-size: 11px;
@@ -215,32 +216,47 @@ h1 {
   position: sticky;
   top: 132px;  /* below the filter bar */
   z-index: 5;
+  /* Multi-line header: long column paths (e.g. quality_flags.dnsmos_ovrl)
+     wrap instead of getting cut off with an ellipsis. The drag-resize
+     handle still works on top of wrapped headers. */
+  white-space: normal;
+  word-break: break-word;
+  vertical-align: bottom;
+  line-height: 1.25;
+  position: relative;  /* anchor for the resize handle */
+  padding-right: 14px; /* leave room for the handle */
 }
 .rows-table th.sortable { cursor: pointer; user-select: none; }
-.rows-table th.sortable:hover { color: var(--accent); }
-.rows-table th.sort-asc::after { content: " ↑"; opacity: 0.7; }
-.rows-table th.sort-desc::after { content: " ↓"; opacity: 0.7; }
+.rows-table th.sortable:hover .col-label { color: var(--accent); }
+.rows-table th.sort-asc .col-label::after { content: " ↑"; opacity: 0.7; }
+.rows-table th.sort-desc .col-label::after { content: " ↓"; opacity: 0.7; }
 .rows-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .rows-table th.num { text-align: right; }
 
-/* Column widths — class-based so visibility / order doesn't shift them.
-   Percentages are relative weights (table-layout: fixed redistributes them
-   to fill 100% across whichever columns are visible). */
-.col-utterance_id           { width: 18%; }
-.col-source                 { width: 11%; }
-.col-duration_sec           { width: 5%; }
-.col-audio                  { width: 26%; min-width: 360px; }
-.col-has_text               { width: 5%; }
-.col-text_preview           { width: 22%; white-space: normal; }
-.col-text_qwen_ft_greedy    { width: 18%; white-space: normal; }
-.col-text_canary_v2_greedy  { width: 18%; white-space: normal; }
-.col-qf_dnsmos_ovrl         { width: 5%; }
-.col-qf_vad_speech_ratio    { width: 5%; }
-.col-qf_lid                 { width: 5%; }
-.col-qf_lid_is_hu_prob      { width: 6%; }
-.col-qf_is_clipped          { width: 5%; }
-.col-qc_pairwise_wer        { width: 7%; }
-.col-qc_exact_match         { width: 6%; }
+/* Audio cell: keep the inline player at a usable width regardless of how
+   many columns the user picked. JS-set width can still go BIGGER but the
+   floor is here. */
+.rows-table td.col-_audio_player audio { width: 100%; min-width: 240px; }
+
+/* Column resize handle — a 6px-wide grab strip on the right edge of each
+   th. Hover highlights, dragging applies cursor to whole body. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  background: transparent;
+  border-right: 1px solid transparent;
+}
+.col-resize-handle:hover {
+  background: var(--accent-soft);
+  border-right-color: var(--accent);
+}
+body.col-resizing { cursor: col-resize !important; user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
 
 .rows-table tr:hover td { background: var(--accent-soft); }
 
