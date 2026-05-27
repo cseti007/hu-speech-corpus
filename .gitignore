@@ -10,11 +10,23 @@ __pycache__/
 venv/
 env/
 
+# Third-party repos checked out for local use (e.g. facebookresearch/voxpopuli)
+external/
+
+# Internal experiments / POC scripts — not part of the public release
+bin/poc/
+
 # Editor
 .vscode/
 .idea/
 *.swp
 *~
+
+# Claude Code session files (per-machine config / cache)
+.claude/
+
+# Private working docs (JOURNEY, snapshots, schema drafts, etc.)
+notes/
 
 # Secrets — never commit
 .hf_token

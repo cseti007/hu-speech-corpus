@@ -19,10 +19,13 @@ sources:
     actual_utterance_count: 167705
     priority: 1
     path: raw/yodas_hu000
-    status: downloaded_extracted
+    status: deleted_2026_05_20
     notes: |
       Manual captions = human-uploaded YouTube subtitles, not ASR-generated.
       Higher quality anchor than MOSEL pseudo-labels.
+      DELETED 2026-05-20: superseded by yodas2_hu000 (v2). v2 contains the
+      same 1209 videos at video level + 70 more; utterance sets are
+      essentially identical. 35 GB freed.
 
   librivox_hu:
     description: LibriVox Hungarian public-domain audiobooks (only 2 books exist!)
@@ -122,6 +125,40 @@ sources:
       2. Szabad Europa Podcast — interview format, 9 free-license episodes (PD/CC0/CC-BY).
          (s02e02 skipped: no license declared on archive.org.)
       Search archive.org periodically for new HU free-license audio items to add here.
+
+  common_voice_25_0_hu:
+    description: Mozilla Common Voice Scripted Speech 25.0 — Hungarian
+    source_url: https://mozilladatacollective.com/datasets/cmn2g9aoi01fyo107xhdrwb5d
+    dataset_id: cmn2g9aoi01fyo107xhdrwb5d
+    license: CC0-1.0
+    hours: 180.85
+    audio_format: MP3 (variable bitrate, 48 kHz typical)
+    actual_size_gb: 7.7  # includes original tarball + extracted clips
+    tarball_size_gb: 3.58
+    actual_clip_count: 117503
+    actual_validated_count: 86128
+    priority: 2
+    path: raw/common_voice_25_0_hu
+    release_date: "2026-03-09"
+    status: downloaded
+    splits:
+      train: { clips: 59395, hours: 88.52 }
+      dev: { clips: 12944, hours: 19.05 }
+      test: { clips: 12989, hours: 20.33 }
+      validated: { clips: 86128, hours: 129.12 }  # superset of train+dev+test
+      other: { clips: 27286, hours: 45.27 }
+      invalidated: { clips: 4089, hours: 6.45 }
+    notes: |
+      Newest CV release (2026-03-09). Crowd-sourced read-speech recordings.
+      Extracted layout: raw/common_voice_25_0_hu/cv-corpus-25.0-2026-03-09/hu/
+        clips/*.mp3 + train.tsv, dev.tsv, test.tsv, validated.tsv, etc.
+      'validated' subset (129.12h, 86,128 clips) passed crowd voting and is
+      the highest-quality portion. 'other' (45.27h) lacks enough votes;
+      usable as unlabeled but quality uncertain. 'invalidated' was rejected
+      by crowd, exclude.
+      Use_for designation (training vs validation) TBD; older CV versions
+      were marked eval_only due to inconsistent quality. Re-evaluate after
+      curator review.
 
   # Sources that DO NOT meet the free-license criteria (documented for clarity, not used):
   not_usable:
