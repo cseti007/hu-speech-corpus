@@ -107,18 +107,26 @@ _NUM_SUFFIXED_RE = re.compile(
 # Symbols that have a well-defined Hungarian spelling. The punct strip
 # would otherwise drop them silently, losing the word an ASR model would
 # emit (e.g. "100%" must produce "száz százalék", not just "száz").
-# Spaces are baked into the replacement so adjacent digits / words get
-# detached cleanly.
-_SYMBOL_REPLACEMENTS = (
-    ("%", " százalék "),
-    ("‰", " ezrelék "),
-    ("€", " euró "),
-    ("$", " dollár "),
-    ("&", " és "),
-    ("+", " plusz "),
-    ("=", " egyenlő "),
-    ("§", " paragrafus "),
-    ("°", " fok "),
+_SYMBOL_WORD_MAP = {
+    "%": "százalék",
+    "‰": "ezrelék",
+    "€": "euró",
+    "$": "dollár",
+    "&": "és",
+    "+": "plusz",
+    "=": "egyenlő",
+    "§": "paragrafus",
+    "°": "fok",
+}
+# Match "SYMBOL-suffix" patterns where the Hungarian morphological suffix
+# attaches to the symbol's word form: "%-ról" → "százalékról",
+# "€-ért" → "euróért", etc. This must run BEFORE the standalone symbol
+# replacement, otherwise the "%" alone gets turned into " százalék " and
+# the "-ról" gets stranded.
+_SYMBOL_SUFFIX_RE = re.compile(
+    r"([" + "".join(re.escape(s) for s in _SYMBOL_WORD_MAP) +
+    r"])-([a-záéíóöőúüű]+)\b",
+    flags=re.UNICODE,
 )
 
 
@@ -187,10 +195,16 @@ def normalize_hu(text: str | None) -> str | None:
     text = _NUM_SUFFIXED_RE.sub(_expand_suffixed, text)
     text = _NUM_DECIMAL_RE.sub(_expand_decimal, text)
     text = _NUM_STANDALONE_RE.sub(_expand_standalone, text)
-    # Spell out symbols BEFORE the catch-all punct strip drops them.
-    # "100%" → "száz százalék", not just "száz".
-    for sym, word in _SYMBOL_REPLACEMENTS:
-        text = text.replace(sym, word)
+    # Symbol-with-Hungarian-suffix FIRST: "%-ról" → "százalékról",
+    # "€-ért" → "euróért". Keeps the suffix attached to the word form.
+    text = _SYMBOL_SUFFIX_RE.sub(
+        lambda m: " " + _SYMBOL_WORD_MAP[m.group(1)] + m.group(2) + " ",
+        text,
+    )
+    # Standalone symbols (no Hungarian suffix attached).
+    # "100%" → "száz százalék", "5€" → "öt euró".
+    for sym, word in _SYMBOL_WORD_MAP.items():
+        text = text.replace(sym, " " + word + " ")
     # Hyphens → spaces (preserve word boundaries before the catch-all punct
     # strip). E.g. "kétezer-tíz" → "kétezer tíz" so token-level WER matches
     # ASR output that emits the same number as two words.
