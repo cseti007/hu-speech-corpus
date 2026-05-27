@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-"""Build unified JSONL manifests (v3 schema) from downloaded sources.
+"""Build the unified JSONL manifest (v4 schema) from downloaded sources.
 
 Outputs into processed/manifests/:
-  - train_aligned.jsonl       audio + transcript ready
-  - train_unaligned.jsonl     long-form audio, no transcript
-  - train_pseudo_labeled.jsonl  MOSEL Whisper-pseudo, audio_path=null until segmentation
-  - stats.json                per-source counts and totals
+  - manifest.jsonl           training-ready rows: transcribed (human text) +
+                             pseudo_transcribed (MOSEL Whisper text) +
+                             untranscribed_chunks (long-form, chunked audio).
+                             Category is derivable per row from `transcripts`
+                             (empty = audio-only) and `transcripts.keys()`
+                             (which provider supplied the text).
+  - manifest_sessions.jsonl  session-level long-form parents (LibriVox chapters,
+                             podcast episodes, VoxPopuli unlabeled sessions).
+                             Linked to chunk rows via parent_audio_path.
+  - stats.json               v4 schema: `manifest.{total,by_source}` and
+                             `sessions.{total,by_source}`.
 
-Schema v3 — per row (see notes/MANIFEST_SCHEMA.md for full description):
+Quality scores (Tier-1 / Tier-2) are NOT written by this script. Run
+bin/merge_quality_into_manifest.py afterwards to merge sidecars into
+quality_flags and refresh the quality counters in stats.json.
+
+Per-row schema (see notes/MANIFEST_SCHEMA.md for full description):
   Identification: utterance_id, source, source_item_id, parent_session_id
   Audio: audio_path (nullable), audio_format, parquet_row_index (nullable),
          relative_audio_path, sample_rate, channels, codec, duration_sec,
@@ -39,6 +50,18 @@ DEFAULT_ROOT = Path("/home/cseti/datassd2/hu-speech-corpus")
 
 SHORT_THRESHOLD_SEC = 1.0
 LONG_THRESHOLD_SEC = 30.0
+
+# Phase 2.5 normalization sidecars (paths relative to root)
+NORM_DIR_REL = "processed/normalization"
+YODAS2_MERGED_SIDECAR_REL = f"{NORM_DIR_REL}/yodas2_merged.jsonl"
+VP_LABELED_DUR_SIDECAR_REL = f"{NORM_DIR_REL}/voxpopuli_labeled_durations.jsonl"
+CHUNKS_LIBRIVOX_SIDECAR_REL = f"{NORM_DIR_REL}/chunks_librivox_hu.jsonl"
+CHUNKS_PODCASTS_SIDECAR_REL = f"{NORM_DIR_REL}/chunks_podcasts_hu_cc.jsonl"
+CHUNKS_VP_GAP_SIDECAR_REL = f"{NORM_DIR_REL}/chunks_voxpopuli_unlabeled_gap.jsonl"
+
+# Clip duration acceptance window (3-30s, applied post-normalization).
+CLIP_MIN_DUR_SEC = 3.0
+CLIP_MAX_DUR_SEC = 30.0
 
 LICENSE_URL_TO_SPDX = {
     "creativecommons.org/licenses/by/4.0": "CC-BY-4.0",
@@ -222,90 +245,45 @@ def yodas_v1_rows(root: Path) -> Iterator[Row]:
         )
 
 
-# === YODAS2 — sessions + virtual utterance segments ===
+# === YODAS2 — merged 3-30s clips (Phase 2.5 normalization) ===
+
+
+def _yodas2_video_wav_index(audio_dir: Path) -> dict[str, Path]:
+    """Build dict: video_id -> path to its WAV file. YODAS2 extracts all WAVs
+    flat into `audio/` (the `.tar.extracted` entries are 0-byte sentinels,
+    not subdirectories)."""
+    return {wav.stem: wav for wav in audio_dir.glob("*.wav")}
+
 
 def yodas2_rows(root: Path) -> Iterator[Row]:
-    base = root / "raw" / "yodas2_hu000" / "data" / "hu000"
-    audio_dir = base / "audio"
-    text_dir = base / "text"
-    dur_dir = base / "duration"
+    """Emit YODAS2 rows from the merged sidecar (Phase 2.5 normalization).
 
-    # Video-level durations
-    video_dur: dict[str, float] = {}
-    for f in dur_dir.glob("*.txt"):
-        for line in f.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                vid, _, secs = line.partition(" ")
-                try:
-                    video_dur[vid] = float(secs)
-                except ValueError:
-                    pass
+    The sidecar `processed/normalization/yodas2_merged.jsonl` contains
+    pre-merged 3-30s clips. The audio_path here is the parent video WAV, with
+    segment_start_sec / segment_end_sec defining the clip window inside it.
+    """
+    sidecar = root / YODAS2_MERGED_SIDECAR_REL
+    if not sidecar.exists():
+        print(f"[yodas2_hu000] sidecar missing: {sidecar}", file=sys.stderr)
+        return
 
-    # Build utterance lookup from JSONs
-    # Each JSON is a list of {audio_id, text: {utt_id: transcript}}
-    video_to_utts: dict[str, dict[str, str]] = {}
-    for f in sorted(text_dir.glob("*.json")):
-        d = json.load(f.open())
-        for entry in d:
-            vid = entry.get("audio_id")
-            if vid:
-                video_to_utts[vid] = entry.get("text", {})
+    audio_dir = root / "raw" / "yodas2_hu000" / "data" / "hu000" / "audio"
+    wav_index = _yodas2_video_wav_index(audio_dir)
 
-    # Iterate over video-level wav files
-    for wav in tqdm(sorted(audio_dir.glob("*.wav")), desc="yodas2_hu000", unit="video"):
-        vid = wav.stem
-        utts = video_to_utts.get(vid, {})
-        rel = str(wav.relative_to(root))
-        video_duration = video_dur.get(vid, 0.0)
-
-        # 1) Emit one session-level row for the whole video (audio-only, unaligned)
-        # Actually we'll skip session-level if we have utterance-level alignment
-        # (the JSON gives us per-utt text + timestamps). The unsegmented audio is
-        # the parent for the virtual segments. We only emit unsegmented if no utts.
-        if not utts:
+    n_emitted = 0
+    n_dropped_no_wav = 0
+    with sidecar.open(encoding="utf-8") as f:
+        for line in tqdm(f, desc="yodas2_hu000 (merged)", unit="clip"):
+            rec = json.loads(line)
+            vid = rec["audio_id"]
+            wav = wav_index.get(vid)
+            if wav is None:
+                n_dropped_no_wav += 1
+                continue
+            rel = str(wav.relative_to(root))
+            dur = rec["duration_sec"]
             yield Row(
-                utterance_id=f"yodas2/{vid}",
-                source="yodas2_hu000",
-                source_item_id=vid,
-                parent_session_id=None,
-                audio_path=str(wav),
-                audio_format="wav",
-                parquet_row_index=None,
-                relative_audio_path=rel,
-                sample_rate=24000,
-                channels=1,
-                codec="wav",
-                duration_sec=video_duration,
-                segment_start_sec=None,
-                segment_end_sec=None,
-                parent_audio_path=f"https://www.youtube.com/watch?v={vid}",
-                transcripts={},
-                text_consensus=None,
-                consensus_method=None,
-                confidence_level="UNKNOWN",
-                pairwise_wer=None,
-                hallucination_flags=None,
-                speaker_id=vid,
-                domain="youtube",
-                register="unknown",
-                language="hu",
-                license="CC-BY-3.0",
-                license_url="https://creativecommons.org/licenses/by/3.0/",
-                attribution=f"YouTube video {vid} (CC-BY, YODAS2 hu000)",
-                split="train",
-                segmentation_status="session_level",
-                quality_flags=quality_flags_basic(video_duration, is_segmented=False),
-            )
-            continue
-
-        # 2) Emit one virtual-segment row per utterance in the JSON
-        for utt_id, transcript in utts.items():
-            video_id, seg_start, seg_end = parse_yodas_utterance_id(utt_id)
-            dur = None
-            if seg_start is not None and seg_end is not None:
-                dur = seg_end - seg_start
-            yield Row(
-                utterance_id=utt_id,
+                utterance_id=rec["merged_utt_id"],
                 source="yodas2_hu000",
                 source_item_id=vid,
                 parent_session_id=None,
@@ -317,10 +295,10 @@ def yodas2_rows(root: Path) -> Iterator[Row]:
                 channels=1,
                 codec="wav",
                 duration_sec=dur,
-                segment_start_sec=seg_start,
-                segment_end_sec=seg_end,
+                segment_start_sec=rec["start_sec"],
+                segment_end_sec=rec["end_sec"],
                 parent_audio_path=f"https://www.youtube.com/watch?v={vid}",
-                transcripts={"source_caption": transcript.strip()},
+                transcripts={"source_caption": rec["text"]},
                 text_consensus=None,
                 consensus_method=None,
                 confidence_level="UNKNOWN",
@@ -334,9 +312,17 @@ def yodas2_rows(root: Path) -> Iterator[Row]:
                 license_url="https://creativecommons.org/licenses/by/3.0/",
                 attribution=f"YouTube video {vid} (CC-BY, YODAS2 hu000)",
                 split="train",
-                segmentation_status="virtual_segment",
-                quality_flags=quality_flags_basic(dur, is_segmented=True),
+                segmentation_status="merged",
+                quality_flags={
+                    **quality_flags_basic(dur, is_segmented=True),
+                    "merged_from": rec["merged_from"],
+                    "video_duration_sec": rec["video_duration_sec"],
+                },
             )
+            n_emitted += 1
+
+    print(f"[yodas2_hu000] emitted {n_emitted:,} merged clips "
+          f"(dropped {n_dropped_no_wav} missing-wav)", file=sys.stderr)
 
 
 # === Archive.org sources (LibriVox, podcasts) ===
@@ -400,9 +386,30 @@ def archive_org_rows(root: Path, src_key: str, src_cfg: dict,
 
 # === VoxPopuli HU labeled (parquet) ===
 
+def _load_voxpopuli_labeled_durations(root: Path) -> dict[str, float]:
+    """Load duration_sec by audio_id from the Phase 2.5 sidecar."""
+    sidecar = root / VP_LABELED_DUR_SIDECAR_REL
+    if not sidecar.exists():
+        return {}
+    out = {}
+    with sidecar.open(encoding="utf-8") as f:
+        for line in f:
+            r = json.loads(line)
+            out[r["audio_id"]] = r["duration_sec"]
+    return out
+
+
 def voxpopuli_labeled_rows(root: Path) -> Iterator[Row]:
     import pyarrow.parquet as pq
     base = root / "raw" / "voxpopuli_hu_labeled" / "hu"
+    durations = _load_voxpopuli_labeled_durations(root)
+    if durations:
+        print(f"[voxpopuli_hu_labeled] loaded {len(durations):,} durations from sidecar",
+              file=sys.stderr)
+
+    n_dropped_short = 0
+    n_dropped_long = 0
+    n_emitted = 0
     for parquet_path in sorted(base.glob("*.parquet")):
         split_name = "train" if "train" in parquet_path.name else (
             "test" if "test" in parquet_path.name else "validation"
@@ -415,8 +422,15 @@ def voxpopuli_labeled_rows(root: Path) -> Iterator[Row]:
         desc = f"voxpopuli_labeled/{parquet_path.stem}"
         for idx, r in tqdm(df.iterrows(), total=len(df), desc=desc, unit="utt"):
             uid = str(r["audio_id"])
-            # session_id ~ "20110912-0900-PLENARY-16-hu_<datetime>_<seg>"
-            # Extract the leading "<date>-NNNN-PLENARY-N" portion before "-hu"
+            duration = durations.get(uid)
+            # Filter to 3-30s acceptance window (Phase 2.5 normalization rule).
+            if duration is not None:
+                if duration < CLIP_MIN_DUR_SEC:
+                    n_dropped_short += 1
+                    continue
+                if duration > CLIP_MAX_DUR_SEC:
+                    n_dropped_long += 1
+                    continue
             parent_session = uid.split("-hu")[0] + "_hu" if "-hu" in uid else None
             yield Row(
                 utterance_id=f"voxpopuli_hu_labeled/{uid}",
@@ -430,7 +444,7 @@ def voxpopuli_labeled_rows(root: Path) -> Iterator[Row]:
                 sample_rate=16000,
                 channels=1,
                 codec="parquet_internal",
-                duration_sec=None,
+                duration_sec=duration,
                 segment_start_sec=None,
                 segment_end_sec=None,
                 parent_audio_path=None,
@@ -456,6 +470,12 @@ def voxpopuli_labeled_rows(root: Path) -> Iterator[Row]:
                                "is_gold_transcript": bool(r["is_gold_transcript"]),
                                "gender": str(r.get("gender", ""))},
             )
+            n_emitted += 1
+
+    if n_dropped_short or n_dropped_long:
+        print(f"[voxpopuli_hu_labeled] emitted {n_emitted:,}, dropped "
+              f"{n_dropped_short} <3s + {n_dropped_long} >30s outliers",
+              file=sys.stderr)
 
 
 # === VoxPopuli HU unlabeled (session-level ogg) ===
@@ -506,11 +526,162 @@ def voxpopuli_unlabeled_rows(root: Path) -> Iterator[Row]:
         )
 
 
+# === Untranscribed chunks (Phase 2.5: VAD-chunked long-form audio) ===
+
+# Source-specific metadata for chunk-level untranscribed rows.
+CHUNKS_SOURCE_META = {
+    "librivox_hu": {
+        "sidecar_rel": CHUNKS_LIBRIVOX_SIDECAR_REL,
+        "domain": "audiobook",
+        "register": "narrated",
+        "license": "PD",
+        "license_url": "https://creativecommons.org/publicdomain/mark/1.0/",
+        "attribution_template": "LibriVox HU chapter (PD, chunked from {parent})",
+    },
+    "podcasts_hu_cc": {
+        "sidecar_rel": CHUNKS_PODCASTS_SIDECAR_REL,
+        "domain": "podcast",
+        "register": "spontaneous",
+        "license": "CC-BY",  # mixed CC-BY/CC0/PD; per-item resolution preserved in raw config
+        "license_url": None,
+        "attribution_template": "HU podcast (mixed CC, chunked from {parent})",
+    },
+    "voxpopuli_unlabeled_gap": {
+        "sidecar_rel": CHUNKS_VP_GAP_SIDECAR_REL,
+        "domain": "parliament",
+        "register": "formal",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "attribution_template": "European Parliament HU gap-chunk (VoxPopuli unlabeled, CC0, chunked from {parent})",
+    },
+}
+
+
+def untranscribed_chunks_rows(root: Path) -> Iterator[Row]:
+    """Emit chunk-level rows from Phase 2.5 VAD-chunking sidecars.
+
+    Three sources feed this manifest:
+    - librivox_hu chunks (3-30s VAD slices of audiobook chapters)
+    - podcasts_hu_cc chunks (3-30s VAD slices of podcast episodes)
+    - voxpopuli_unlabeled_gap chunks (3-30s VAD slices of the regions of
+      VoxPopuli HU sessions NOT covered by MOSEL alignment)
+    """
+    n_emitted_by_source: dict[str, int] = {}
+    for source_key, meta in CHUNKS_SOURCE_META.items():
+        sidecar = root / meta["sidecar_rel"]
+        if not sidecar.exists():
+            print(f"[{source_key}] sidecar missing: {sidecar}", file=sys.stderr)
+            continue
+        n_source = 0
+        with sidecar.open(encoding="utf-8") as f:
+            for line in tqdm(f, desc=f"{source_key} chunks", unit="chunk"):
+                rec = json.loads(line)
+                dur = rec["duration_sec"]
+                # Sanity: should already be 3-30s by Phase 2.5 construction.
+                if dur < CLIP_MIN_DUR_SEC or dur > CLIP_MAX_DUR_SEC:
+                    continue
+                audio_path = rec["audio_path"]
+                parent_file = rec["parent_file_path"]
+                # Unique id and parent_session_id for tracking
+                if source_key == "voxpopuli_unlabeled_gap":
+                    sid = rec["session_id"]
+                    item_id = f"{sid}_{rec['chunk_index']:06d}"
+                    parent_session = sid
+                else:
+                    fid = rec["file_id"]
+                    item_id = f"{fid}_{rec['chunk_index']:06d}"
+                    parent_session = fid
+                rel = str(Path(audio_path).relative_to(root))
+                attribution = meta["attribution_template"].format(parent=Path(parent_file).name)
+                yield Row(
+                    utterance_id=f"{source_key}/{item_id}",
+                    source=source_key,
+                    source_item_id=item_id,
+                    parent_session_id=parent_session,
+                    audio_path=audio_path,
+                    audio_format="ogg",
+                    parquet_row_index=None,
+                    relative_audio_path=rel,
+                    sample_rate=16000,
+                    channels=1,
+                    codec="vorbis",
+                    duration_sec=dur,
+                    segment_start_sec=rec["start_sec"],
+                    segment_end_sec=rec["end_sec"],
+                    parent_audio_path=parent_file,
+                    transcripts={},
+                    text_consensus=None,
+                    consensus_method=None,
+                    confidence_level="UNKNOWN",
+                    pairwise_wer=None,
+                    hallucination_flags=None,
+                    speaker_id=parent_session,
+                    domain=meta["domain"],
+                    register=meta["register"],
+                    language="hu",
+                    license=meta["license"],
+                    license_url=meta["license_url"],
+                    attribution=attribution,
+                    split="train",
+                    segmentation_status="chunked",
+                    quality_flags={
+                        "too_short": False,
+                        "too_long": False,
+                        "chunk_index": rec["chunk_index"],
+                        "parent_file_duration_sec": rec["parent_file_duration_sec"],
+                    },
+                )
+                n_source += 1
+        n_emitted_by_source[source_key] = n_source
+        print(f"[{source_key}] emitted {n_source:,} chunked rows", file=sys.stderr)
+
+
 # === MOSEL pseudo-labels (audio not yet segmented) ===
 
-def mosel_pseudo_label_rows(root: Path) -> Iterator[Row]:
+def _load_voxpopuli_hu_alignment(root: Path) -> dict[str, tuple[float, float]]:
+    """Load (start, end) seconds keyed by MOSEL utterance ID from the official
+    VoxPopuli unlabelled_v2 alignment TSV. Returns empty dict if not found.
+    """
+    import gzip
+    candidates = [
+        root / "raw" / "voxpopuli_hu_unlabeled" / "annotations" / "unlabelled_v2.tsv.gz",
+        root / "raw" / "voxpopuli_hu_unlabeled" / "unlabelled_data" / "unlabelled_v2.tsv.gz",
+    ]
+    tsv = next((p for p in candidates if p.exists()), None)
+    if tsv is None:
+        return {}
+    lookup: dict[str, tuple[float, float]] = {}
+    with gzip.open(tsv, "rt") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for r in tqdm(reader, desc="loading voxpopuli alignment", unit="row"):
+            event_id = r.get("event_id", "")
+            if not event_id.endswith("_hu"):
+                continue
+            seg_no = r.get("segment_no", "")
+            try:
+                start = float(r["start"])
+                end = float(r["end"])
+            except (ValueError, KeyError):
+                continue
+            lookup[f"{event_id}_{seg_no}"] = (start, end)
+    return lookup
+
+
+def mosel_pseudo_transcribed_rows(root: Path) -> Iterator[Row]:
     base = root / "raw" / "mosel_hu" / "transcripts" / "hu"
     csv.field_size_limit(sys.maxsize)
+
+    # If the VoxPopuli HU session segmentation has completed (sentinel present),
+    # we can fill in audio_path + duration for every voxpopuli-derived MOSEL row.
+    # See bin/segment_voxpopuli.py and notes/MANIFEST_SCHEMA.md.
+    vp_seg_root = (root / "raw" / "voxpopuli_hu_unlabeled" /
+                   "unlabelled_data" / "hu")
+    vp_seg_complete = (root / "raw" / "voxpopuli_hu_unlabeled" /
+                       ".segmentation_complete").exists()
+    vp_alignment = _load_voxpopuli_hu_alignment(root) if vp_seg_complete else {}
+    if vp_alignment:
+        print(f"[mosel] loaded {len(vp_alignment):,} voxpopuli HU alignments",
+              file=sys.stderr)
 
     def yield_tsv(path: Path, source_key: str, attribution: str) -> Iterator[Row]:
         with path.open(encoding="utf-8") as f:
@@ -523,6 +694,7 @@ def mosel_pseudo_label_rows(root: Path) -> Iterator[Row]:
                 # voxpopuli.tsv: "20160118-0900-PLENARY-10_hu_0" → "20160118-0900-PLENARY-10_hu"
                 # ytc.tsv: "VoDy7yMW8tU-425964-240" → ytc YouTube id
                 parent_session = uid.rsplit("_", 1)[0] if "_hu_" in uid else uid.split("-")[0]
+
                 hall = {
                     "repeated_ngrams": row.get("hall_repeated_ngrams", "False") == "True",
                     "long_word": row.get("hall_long_word", "False") == "True",
@@ -544,6 +716,24 @@ def mosel_pseudo_label_rows(root: Path) -> Iterator[Row]:
                 seg_end = (seg_start + duration_sec
                           if seg_start is not None and duration_sec is not None else None)
 
+                # Fill audio_path + override duration/start/end from the
+                # official VoxPopuli alignment for voxpopuli-derived rows
+                # when segmentation has completed.
+                seg_audio_path = None
+                seg_relative_path = None
+                seg_status = "pending_segmentation"
+                if source_key == "mosel_hu_voxpopuli" and vp_seg_complete:
+                    year = uid[:4]
+                    candidate = vp_seg_root / year / f"{uid}.ogg"
+                    seg_audio_path = str(candidate)
+                    seg_relative_path = str(candidate.relative_to(root))
+                    seg_status = "segmented_file"
+                    align = vp_alignment.get(uid)
+                    if align is not None:
+                        seg_start = align[0]
+                        seg_end = align[1]
+                        duration_sec = seg_end - seg_start
+
                 # Quality flag: lid-mismatch (not Hungarian)
                 qf = {"too_short": False, "too_long": False,
                       "any_hallucination_flag": any(hall.values()),
@@ -554,10 +744,10 @@ def mosel_pseudo_label_rows(root: Path) -> Iterator[Row]:
                     source=source_key,
                     source_item_id=parent_session,
                     parent_session_id=parent_session,
-                    audio_path=None,  # will be filled in after segmentation
-                    audio_format=None,
+                    audio_path=seg_audio_path,
+                    audio_format="ogg" if seg_audio_path else None,
                     parquet_row_index=None,
-                    relative_audio_path=None,
+                    relative_audio_path=seg_relative_path,
                     sample_rate=16000,
                     channels=1,
                     codec="ogg",
@@ -582,7 +772,7 @@ def mosel_pseudo_label_rows(root: Path) -> Iterator[Row]:
                     license_url="https://creativecommons.org/licenses/by/4.0/",
                     attribution=attribution,
                     split="train",
-                    segmentation_status="pending_segmentation",
+                    segmentation_status=seg_status,
                     quality_flags=qf,
                 )
 
@@ -608,11 +798,17 @@ def write_jsonl(rows_iter: Iterator[Row], out: Path) -> int:
     return n
 
 
-def stats_for_file(path: Path) -> dict:
+def stats_for_manifest(path: Path) -> dict:
+    """Per-source counters for `manifest.jsonl` (post-build, pre-quality-merge).
+
+    Mirrors the field set of bin/merge_quality_into_manifest.py and
+    bin/unify_manifests.py so that the v4 `manifest.by_source` shape stays
+    stable across the build -> merge_quality pipeline. Quality-coverage
+    counters (with_tier1, with_vad, ...) are 0 at this stage; they get
+    populated by merge_quality."""
     by_source: dict[str, dict] = defaultdict(
         lambda: {"count": 0, "hours": 0.0, "with_text": 0,
                  "too_short": 0, "too_long": 0,
-                 "pending_segmentation": 0,
                  "halluc_flagged": 0, "lid_not_hu": 0}
     )
     with path.open(encoding="utf-8") as f:
@@ -629,16 +825,36 @@ def stats_for_file(path: Path) -> dict:
                 s["too_short"] += 1
             if qf.get("too_long"):
                 s["too_long"] += 1
-            if r["segmentation_status"] == "pending_segmentation":
-                s["pending_segmentation"] += 1
             if qf.get("any_hallucination_flag"):
                 s["halluc_flagged"] += 1
-            if qf.get("lid") and qf.get("lid") != "hu":
+            lid_top1 = qf.get("lid_top1") or qf.get("lid")
+            if lid_top1 is not None and lid_top1 != "hu":
                 s["lid_not_hu"] += 1
     total = {
         "count": sum(s["count"] for s in by_source.values()),
         "hours": round(sum(s["hours"] for s in by_source.values()), 2),
         "with_text": sum(s["with_text"] for s in by_source.values()),
+    }
+    total["audio_only"] = total["count"] - total["with_text"]
+    return {"total": total,
+            "by_source": {k: {**v, "hours": round(v["hours"], 2)}
+                          for k, v in by_source.items()}}
+
+
+def stats_for_sessions(path: Path) -> dict:
+    """Per-source count + hours for `manifest_sessions.jsonl`. Sessions never
+    carry quality scores or text, so the bucket only tracks count and hours."""
+    by_source: dict[str, dict] = defaultdict(lambda: {"count": 0, "hours": 0.0})
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            r = json.loads(line)
+            s = by_source[r["source"]]
+            s["count"] += 1
+            if r["duration_sec"]:
+                s["hours"] += r["duration_sec"] / 3600
+    total = {
+        "count": sum(s["count"] for s in by_source.values()),
+        "hours": round(sum(s["hours"] for s in by_source.values()), 2),
     }
     return {"total": total,
             "by_source": {k: {**v, "hours": round(v["hours"], 2)}
@@ -657,19 +873,25 @@ def main() -> int:
     sources = cfg.get("sources", {})
     manifests_dir = args.root / "processed" / "manifests"
 
-    # Build each file separately, streaming where possible
-    def aligned_rows() -> Iterator[Row]:
-        if sources.get("yodas_hu000", {}).get("status", "").startswith("downloaded"):
-            yield from yodas_v1_rows(args.root)
-        # YODAS2 virtual-segment rows go into aligned because they have text + timestamps
+    # Row generators per logical category (kept as separate functions for
+    # clarity; they all feed into the single manifest.jsonl below, except
+    # session-level untranscribed which goes to manifest_sessions.jsonl).
+    def transcribed_rows() -> Iterator[Row]:
+        # YODAS2 supersedes YODAS v1 (v1 is a video-level subset of v2 with
+        # near-identical utterance sets — see notes/YODAS_v1_v2_analysis.md).
+        # Emit v1 only as a fallback when v2 isn't downloaded.
         yodas2_dir = args.root / "raw" / "yodas2_hu000"
-        if (yodas2_dir / ".download_complete").exists():
+        has_yodas2 = (yodas2_dir / ".download_complete").exists()
+        if has_yodas2:
             yield from yodas2_rows(args.root)
+        elif sources.get("yodas_hu000", {}).get("status", "").startswith("downloaded"):
+            print("[transcribed] yodas2 missing, falling back to yodas v1", file=sys.stderr)
+            yield from yodas_v1_rows(args.root)
         vp_labeled_dir = args.root / "raw" / "voxpopuli_hu_labeled"
         if (vp_labeled_dir / ".download_complete").exists():
             yield from voxpopuli_labeled_rows(args.root)
 
-    def unaligned_rows() -> Iterator[Row]:
+    def sessions_rows() -> Iterator[Row]:
         for src_key, (domain, register) in ARCHIVE_SRC_DOMAIN.items():
             src_cfg = sources.get(src_key, {})
             if not src_cfg.get("status", "").startswith("downloaded"):
@@ -679,37 +901,43 @@ def main() -> int:
         if (vp_un_dir / ".download_complete").exists():
             yield from voxpopuli_unlabeled_rows(args.root)
 
-    print("[aligned] building rows...")
-    n_aligned = write_jsonl(aligned_rows(), manifests_dir / "train_aligned.jsonl")
-    print(f"  {n_aligned:,} rows -> train_aligned.jsonl")
+    def manifest_rows() -> Iterator[Row]:
+        """All training-ready rows: human-transcribed + Whisper-pseudo + chunked."""
+        print("[manifest] streaming transcribed (human text) rows...", file=sys.stderr)
+        yield from transcribed_rows()
+        if not args.skip_mosel:
+            print("[manifest] streaming pseudo_transcribed (MOSEL Whisper) rows...",
+                  file=sys.stderr)
+            yield from mosel_pseudo_transcribed_rows(args.root)
+        print("[manifest] streaming untranscribed_chunks (VAD-chunked long-form) rows...",
+              file=sys.stderr)
+        yield from untranscribed_chunks_rows(args.root)
 
-    print("[unaligned] building rows...")
-    n_unaligned = write_jsonl(unaligned_rows(), manifests_dir / "train_unaligned.jsonl")
-    print(f"  {n_unaligned:,} rows -> train_unaligned.jsonl")
+    manifest_path = manifests_dir / "manifest.jsonl"
+    sessions_path = manifests_dir / "manifest_sessions.jsonl"
 
-    if not args.skip_mosel:
-        print("[pseudo_labeled] building rows from MOSEL TSV (this is large)...")
-        n_pseudo = write_jsonl(mosel_pseudo_label_rows(args.root),
-                              manifests_dir / "train_pseudo_labeled.jsonl")
-        print(f"  {n_pseudo:,} rows -> train_pseudo_labeled.jsonl")
-    else:
-        n_pseudo = 0
+    print("[build] writing manifest.jsonl...")
+    n_manifest = write_jsonl(manifest_rows(), manifest_path)
+    print(f"  {n_manifest:,} rows -> manifest.jsonl")
 
-    # Compute stats from the written files
+    print("[build] writing manifest_sessions.jsonl (long-form parent index)...")
+    n_sessions = write_jsonl(sessions_rows(), sessions_path)
+    print(f"  {n_sessions:,} rows -> manifest_sessions.jsonl")
+
     stats = {
-        "schema_version": 3,
-        "aligned": stats_for_file(manifests_dir / "train_aligned.jsonl"),
-        "unaligned": stats_for_file(manifests_dir / "train_unaligned.jsonl"),
+        "schema_version": 4,
+        "manifest": stats_for_manifest(manifest_path),
+        "sessions": stats_for_sessions(sessions_path),
     }
-    pseudo_path = manifests_dir / "train_pseudo_labeled.jsonl"
-    if pseudo_path.exists():
-        stats["pseudo_labeled"] = stats_for_file(pseudo_path)
     (manifests_dir / "stats.json").write_text(
         json.dumps(stats, indent=2, ensure_ascii=False)
     )
 
     print()
     print("[done] manifests written to:", manifests_dir)
+    print("[note] run bin/merge_quality_into_manifest.py to merge quality sidecars",
+          "and refresh quality counters in stats.json")
+    print()
     print(json.dumps(stats, indent=2, ensure_ascii=False))
     return 0
 

@@ -21,8 +21,10 @@ Phase 2 (segmentation, manifest refinement, training pipeline decisions).
 | `README.md` | Layout overview, env vars, conventions |
 | `configs/sources.yaml` | Per-source metadata (license, size, status, paths) |
 | `bin/*.py` | Downloaders, manifest builder, future processing scripts |
-| `notes/MANIFEST_SCHEMA.md` | Manifest v3 schema documentation |
+| `notes/MANIFEST_SCHEMA.md` | Manifest v4 schema documentation |
 | `notes/TTS_AUGMENTATION_IDEA.md` | Strategy notes on TTS-augmented ASR |
+| `notes/JOURNEY.md` | **Append-only narrative of the project journey** — see Rule 7 |
+| `notes/stats_snapshots/` | Dated milestone snapshots of corpus state — see Rule 7 |
 
 Data lives separately on the SSD:
 `/home/cseti/datassd2/hu-speech-corpus/` (raw/, processed/manifests/, cache/)
@@ -66,11 +68,38 @@ Scripts read it via `load_token()` helper. Do not commit it, do not print it.
 
 ### Rule 5: Conda env
 
-This project uses base conda:
+This project has **two** Python environments depending on the script:
+
+**(a) Base conda** — for all downloaders and `bin/build_manifest.py`:
 `/media/cseti/datassd/conda/miniconda3/bin/python`
 
-System `/usr/bin/python3` lacks the required libraries (`huggingface_hub`, `pyarrow`,
-`pyyaml`, `tqdm`). Always invoke conda Python explicitly.
+**(b) Dedicated env `hu-speech-corpus`** — for the VoxPopuli segmentation step
+and any other tool that needs the `voxpopuli` clone or `torchaudio`:
+`/media/cseti/datassd/conda/miniconda3/envs/hu-speech-corpus/bin/python`
+
+The dedicated env is provisioned by `bin/setup_env.sh` (idempotent). It contains
+torch+torchaudio (CPU), and clones `facebookresearch/voxpopuli` to
+`external/voxpopuli/` (gitignored, with a `download_url` shim patched in for
+torchaudio>=2.10 compatibility).
+
+System `/usr/bin/python3` lacks the required libraries; always invoke conda
+Python explicitly.
+
+**Per-metric env mapping for the four Phase 3 quality scripts (memorized
+2026-05-26 after a 6-minute silent-hang debug):**
+
+| Script | Env |
+|---|---|
+| `bin/quality_tier1.py` | base |
+| `bin/quality_tier2.py --metric vad` | hu-speech-corpus (torch + silero-vad) |
+| `bin/quality_tier2.py --metric dnsmos` | **audio_ds** (onnxruntime; NOT in hu-speech-corpus) |
+| `bin/quality_tier2.py --metric lid` | audio_ds (speechbrain + torch) |
+| `bin/audit_clip_language_purity_v2.py` | audio_ds (speechbrain GPU) |
+
+Launching `--metric dnsmos` under `hu-speech-corpus` causes the worker pool
+to silently hang on `import onnxruntime`. See memory `quality-script-envs`
+for the canonical reference and `bin/poc_run_all_metrics.py` for the
+hardcoded mapping the smoke/dev pipeline uses.
 
 ### Rule 6: Idempotent everything
 
@@ -79,29 +108,115 @@ For HF downloads: `snapshot_download` handles this. For custom downloads:
 maintain a `progress.json`. For pipeline steps: check sentinel files
 (`.download_complete`, `.segmentation_complete`, etc.).
 
+### Rule 7: JOURNEY.md and stats_snapshots/ are article-grade documentation
+
+`notes/JOURNEY.md` is the chronological narrative of the project —
+append-only. The user plans to write articles / a study from this project,
+and reconstructing "what surprised us / what we decided / why" from git
+history is painful. Append a new entry whenever:
+- A plan was revised because reality didn't match a design doc estimate
+- A method was dropped (capture **why + the numbers** that drove the decision)
+- A pivot was triggered by user feedback (capture both the original
+  reasoning AND the user's redirect)
+- A surprise finding emerged from the data (e.g. "YODAS2 is 14% non-HU",
+  "DNSMOS doesn't scale past 8 workers due to memory bandwidth")
+- Compute-budget reality diverged from doc estimates (e.g. the 0.93 s/file
+  benchmark vs 27 s/clip mosel reality)
+- A failure mode appeared (RAM freeze, CUDA OOM, etc.) — capture root
+  cause AND the fix
+
+At every major milestone (end of a phase, end of a significant experiment),
+drop a dated snapshot in `notes/stats_snapshots/YYYY-MM-DD__label.md` with
+the canonical numbers at that moment.
+
+**What NOT to journal:**
+- Routine technical decisions ("we used JSON for the manifest")
+- Per-task tactics that don't generalize
+- Mid-stream progress reports
+
+The JOURNEY.md and snapshot files are project artifacts (in the repo,
+visible to future article writers). The Claude memory system has a
+backing `feedback-journey-documentation` entry for cross-session
+continuity.
+
+### Rule 8: smoke set first for any new audio feature
+
+Every new audio feature script (`bin/audit_*.py`, `bin/quality_*.py`, any
+new per-clip metric or transformation) must:
+
+1. First run on the **`smoke` set** —
+   `processed/parquets/smoke.parquet`, ~280 multi-source clips with
+   outlier stratification (80% normal + 20% Tier-1 outlier per source).
+2. Output spot-checked **in the curator UI** — values inspected against
+   known clips, not just "exit code 0".
+3. Only then scale to full corpus.
+
+The `smoke` set is the smoke-test bed. The **`dev` set**
+(`processed/parquets/dev.parquet`, 100h multi-source) is a different
+artifact, for Phase 4 ASR consensus WER measurement — do not conflate
+the two. A `test` slot is reserved for a future held-out benchmark
+(naming triad: `smoke` / `dev` / `test`).
+
+Both sets are full mini manifest_v5 instances — every quality metric
+(Tier-1, LID Pass 1, VAD, DNSMOS) is populated from scratch on the
+selected clips, not filtered from full-corpus sidecars.
+
+**Why:** LID v2 Pass 2 ran a 14h ETA over 462k flagged clips before user
+spot-check revealed VoxLingua107 ECAPA-TDNN on 1-second windows produces
+effectively random language labels. The script ran without errors; the
+output was garbage. Rule 6 (idempotent) and the existing "dry-run for
+stability" heuristic catch RAM/GPU/OOM failure modes but **not**
+output-correctness failure modes. This rule closes that gap.
+
+This is the codified surface of the `poc-smoke-test-policy` memory entry;
+the `smoke` + `dev` parquets themselves are documented in
+`smoke-and-dev-sets`.
+
 ## First-session checklist for a new Claude
 
 When a user opens a fresh session in this directory:
 
 1. Read `STATS.md` to know current corpus size — answer "how many hours" instantly.
 2. Read `CHECKLIST.md` to know what's pending.
-3. Read `STATUS.md` if you need the prose-level project state and recent decisions.
-4. Read `configs/sources.yaml` if you need per-source detail.
-5. Only then start whatever the user asked for.
+3. Skim `notes/JOURNEY.md` (most recent 1-2 entries) to know the latest
+   pivots / decisions / surprises in flight.
+4. Read `STATUS.md` if you need the prose-level project state.
+5. Read `configs/sources.yaml` if you need per-source detail.
+6. Only then start whatever the user asked for.
 
 Skip the rest of `notes/` unless the user references a specific topic.
 
 ## How to refresh stats after a state change
 
+The current canonical layout is **two files** in `processed/manifests/`:
+- `manifest.jsonl` — every training-ready row (clip-level)
+- `manifest_sessions.jsonl` — session-level long-form parent index
+
+Followed by `stats.json` in v4 schema (`manifest.{total,by_source}` +
+`sessions.{total,by_source}`). The frozen v3 originals live in
+`processed/manifests/_legacy_v3/` for audit purposes; do not read them
+from any script.
+
+Two-step rebuild flow:
+
 ```bash
 cd /home/cseti/data2/Develop/Github-cseti/cseti-os/projects/hu-speech-corpus
+
+# 1. Rebuild base manifests from raw sources (~30 min on full corpus).
+#    Writes manifest.jsonl + manifest_sessions.jsonl + stats.json (quality counters at 0).
 /media/cseti/datassd/conda/miniconda3/bin/python -u bin/build_manifest.py
+
+# 2. Merge Tier-1 + Tier-2 quality sidecars into manifest.jsonl (~1 min, atomic swap).
+#    Refreshes stats.json with the quality counters under manifest.by_source.
+/media/cseti/datassd/conda/miniconda3/bin/python -u bin/merge_quality_into_manifest.py
+
 # then update STATS.md from the new processed/manifests/stats.json
 ```
 
 Manifest rebuild on full corpus (~30 min due to 17k ffprobe calls):
-- aligned: ~3 min
-- unaligned: ~25-30 min (ffprobe on VoxPopuli sessions)
-- pseudo_labeled: ~5 min (MOSEL TSV CSV parse)
+- transcribed rows: ~3 min
+- session-level untranscribed: ~25-30 min (ffprobe on VoxPopuli sessions)
+- pseudo_transcribed (MOSEL TSV CSV parse): ~5 min
 
-Pass `--skip-mosel` to skip the largest file when only aligned/unaligned matters.
+Pass `--skip-mosel` to `build_manifest.py` to skip the largest source when
+only transcribed/untranscribed matters.

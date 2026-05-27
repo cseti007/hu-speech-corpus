@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HU speech corpus — curator</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Hungarian speech corpus — curator</h1>
+    <div class="meta" id="header-meta">loading…</div>
+  </header>
+
+  <div class="filter-bar" id="filter-bar">
+    <div class="filter-row">
+      <label class="filter">
+        <span>Parquet</span>
+        <select id="parquet-picker"></select>
+      </label>
+      <label class="filter">
+        <span>Source</span>
+        <select id="f-source" multiple size="4"></select>
+      </label>
+      <label class="filter grow">
+        <span>Search</span>
+        <input type="text" class="search" id="f-search"
+               placeholder="utterance_id or transcript text…">
+      </label>
+      <div class="filter-actions">
+        <button class="btn primary" id="btn-apply">Apply</button>
+        <button class="btn" id="btn-clear">Clear</button>
+        <button class="btn" id="btn-columns" title="Show / hide table columns">Columns…</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="result-meta" id="result-meta">—</div>
+
+  <table class="rows-table">
+    <thead id="rows-head">
+      <!-- populated dynamically by curator.js based on the user's column choice -->
+    </thead>
+    <tbody id="rows-body">
+    </tbody>
+  </table>
+
+  <div class="pagination" id="pagination"></div>
+
+</div>
+
+<dialog id="detail-modal">
+  <div class="modal-body">
+    <button class="modal-close" id="modal-close">×</button>
+    <h2 id="detail-utt">utterance details</h2>
+    <pre id="detail-json"></pre>
+  </div>
+</dialog>
+
+<dialog id="columns-modal">
+  <div class="modal-body columns-modal-body">
+    <button class="modal-close" id="columns-close">×</button>
+    <h2>Show columns</h2>
+    <div class="columns-toolbar">
+      <input type="search" id="columns-search" placeholder="filter columns…" autocomplete="off">
+      <div class="col-pick-quick">
+        <button class="btn small" id="columns-defaults">Defaults</button>
+        <button class="btn small" id="columns-all">All</button>
+        <button class="btn small" id="columns-none">None</button>
+      </div>
+    </div>
+    <div id="columns-categories" class="columns-categories"></div>
+    <div class="modal-footer">
+      <button class="btn primary" id="columns-apply">Apply</button>
+      <button class="btn" id="columns-cancel">Cancel</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="{{ url_for('static', filename='curator.js') }}"></script>
+</body>
+</html>
