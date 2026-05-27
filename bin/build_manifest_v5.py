@@ -145,9 +145,9 @@ def _expand_suffixed(match: "re.Match[str]") -> str:
     """Expand "10-es" → "tízes", "2024-es" → "kétezerhuszonnégyes".
 
     The Hungarian word form from num2words is collapsed (drop hyphens and
-    internal spaces) before the suffix attaches, so the resulting token is
-    a single word — matching how Hungarian compound number-adjectives are
-    typically spelled."""
+    internal spaces) before the suffix attaches, so the result is a single
+    word — matching how Hungarian compound number-adjectives are typically
+    spelled."""
     n = int(match.group(1))
     suffix = match.group(2)
     word = _num_word(n)
@@ -159,7 +159,7 @@ def _expand_suffixed(match: "re.Match[str]") -> str:
 
 def _expand_standalone(match: "re.Match[str]") -> str:
     """Expand "2010" → "kétezer-tíz" (keep the num2words output as-is;
-    downstream hyphen→space turns it into two tokens, matching how ASR
+    downstream hyphen→space turns it into two words, matching how ASR
     models emit standalone numbers as a sequence of words)."""
     n = int(match.group(0))
     word = _num_word(n)
@@ -206,14 +206,14 @@ def normalize_hu(text: str | None) -> str | None:
     for sym, word in _SYMBOL_WORD_MAP.items():
         text = text.replace(sym, " " + word + " ")
     # Hyphens → spaces (preserve word boundaries before the catch-all punct
-    # strip). E.g. "kétezer-tíz" → "kétezer tíz" so token-level WER matches
+    # strip). E.g. "kétezer-tíz" → "kétezer tíz" so word-level WER matches
     # ASR output that emits the same number as two words.
     text = text.replace("-", " ")
-    # Replace remaining punctuation with SPACE (not empty) so that tokens
+    # Replace remaining punctuation with SPACE (not empty) so that words
     # separated by punctuation don't get glued together. E.g. "5,5%" after
     # numeral expansion is "öt,öt százalék" — stripping the comma to ""
     # would yield "ötöt százalék" (one wrong word); replacing with space
-    # yields "öt öt százalék" (two tokens, fairer for WER).
+    # yields "öt öt százalék" (two words, fairer for WER).
     text = _PUNCT_RE.sub(" ", text)
     text = _WS_RE.sub(" ", text).strip()
     return text
