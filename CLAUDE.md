@@ -139,17 +139,28 @@ visible to future article writers). The Claude memory system has a
 backing `feedback-journey-documentation` entry for cross-session
 continuity.
 
-### Rule 8: smoke set first for any new audio feature
+### Rule 8: smoke → dev → full corpus (3-stage ladder)
 
 Every new audio feature script (`bin/audit_*.py`, `bin/quality_*.py`, any
-new per-clip metric or transformation) must:
+new per-clip metric or transformation, any normalizer change) ladders
+through three explicit stages:
 
-1. First run on the **`smoke` set** —
-   `processed/parquets/smoke.parquet`, ~280 multi-source clips with
-   outlier stratification (80% normal + 20% Tier-1 outlier per source).
-2. Output spot-checked **in the curator UI** — values inspected against
-   known clips, not just "exit code 0".
-3. Only then scale to full corpus.
+1. **smoke set** (`processed/parquets/smoke.parquet`, ~280 clips, seconds
+   to run). Verifies the function works: schema, edge cases, all 6 source
+   types represented.
+2. **dev set** (`processed/parquets/dev.parquet`, ~36k clips, minutes).
+   Verifies at scale + with broader content. Catches outliers smoke
+   didn't sample.
+3. **full corpus** (test + train + manifest_v5.parquet). The expensive
+   rebuild. Only after smoke + dev spot-checked clean.
+
+Output spot-checked **in the curator UI** at EACH stage — values
+inspected against known clips before promoting.
+
+**Light-touch exception:** for pure-function changes where the smoke
+set fully covers the function's input domain (e.g. a text normalizer
+that only touches `transcripts.source_caption`), dev may be skipped
+with an explicit "smoke covers it" note. Default is full ladder.
 
 The `smoke` set is the smoke-test bed. The **`dev` set**
 (`processed/parquets/dev.parquet`, 100h multi-source) is a different
