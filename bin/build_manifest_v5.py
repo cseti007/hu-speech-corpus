@@ -64,9 +64,14 @@ from pathlib import Path
 # ============================================================
 # Hungarian-aware text normalizer
 # ============================================================
-# Replaces the HF VoxPopuli `normalized_text` field whose normalizer strips
-# Hungarian diacritics (see e.g. the row where "Bízom benne" becomes
-# "bzom benne" — the "í" is lost). Our normalizer:
+# Replaces the HF VoxPopuli `normalized_text` field whose normalizer is
+# broken in multiple independent ways (found 2026-05-27, see project
+# memory `hf-voxpopuli-normalizer-broken`):
+#   1) Strips Hungarian diacritics: "Bízom benne" → "bzom benne",
+#      "indított" → "indtott", "biztosít" → "biztost"
+#   2) Expands numerals to ENGLISH words in Hungarian text:
+#      "A magyar kormány 2010 től" → "a magyar kormány two thousand and ten től"
+# Use raw_text + this normalizer instead. Our normalizer:
 #   - NFC normalize (combining marks → composed)
 #   - Lowercase
 #   - Drop punctuation but preserve letters / digits / whitespace
