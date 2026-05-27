@@ -2,10 +2,10 @@
 # Launch the corpus curator (Flask + DuckDB over a parquet file).
 #
 # Usage:
-#   bash bin/curator/serve.sh                    # default: manifest.parquet
-#   bash bin/curator/serve.sh poc                # alias: manifest_poc_100h.parquet
-#   bash bin/curator/serve.sh some_subset.parquet  # relative to manifests/ dir
-#   bash bin/curator/serve.sh /abs/path/file.parquet  # absolute path
+#   bash bin/curator/serve.sh                          # default: smoke.parquet
+#   bash bin/curator/serve.sh smoke|dev|test|train|v5  # named alias
+#   bash bin/curator/serve.sh some_set.parquet         # any parquet in processed/parquets/
+#   bash bin/curator/serve.sh /abs/path/file.parquet   # absolute path
 #
 # Env vars:
 #   CURATOR_PORT       listen port (default 8002)
@@ -15,8 +15,7 @@
 #   CURATOR_PARQUET    set directly to override the arg-based resolution
 #   CURATOR_PARQUETS   comma-separated allow-list of parquet basenames for
 #                      the file picker. Empty = show every parquet in
-#                      processed/parquets/ + processed/manifests/. Set this
-#                      to hide legacy parquets (e.g. manifest_poc_100h.parquet).
+#                      processed/parquets/ + processed/manifests/.
 #                      Default below: the 5 canonical sets + full v5.
 
 set -euo pipefail
@@ -40,7 +39,7 @@ ARG="${1:-}"
 # both MANIFESTS_DIR and PARQUETS_DIR via the file picker UI. CURATOR_PARQUET
 # just selects the INITIAL active parquet on startup.
 
-# Named aliases for common parquets. Extend as new variants land.
+# Named aliases for the canonical sets.
 case "${ARG}" in
   "")
     # Default: smoke.parquet (small, fast to load, good first impression).
@@ -52,14 +51,14 @@ case "${ARG}" in
   dev)
     CURATOR_PARQUET="${PARQUETS_DIR}/dev.parquet"
     ;;
-  poc|poc_100h)
-    CURATOR_PARQUET="${MANIFESTS_DIR}/manifest_poc_100h.parquet"
+  test)
+    CURATOR_PARQUET="${PARQUETS_DIR}/test.parquet"
     ;;
-  multi|multisource|poc_multi)
-    CURATOR_PARQUET="${MANIFESTS_DIR}/manifest_poc_multisource.parquet"
+  train)
+    CURATOR_PARQUET="${PARQUETS_DIR}/train.parquet"
     ;;
-  v5)
-    CURATOR_PARQUET="${MANIFESTS_DIR}/manifest_v5.parquet"
+  v5|manifest_v5)
+    CURATOR_PARQUET="${PARQUETS_DIR}/manifest_v5.parquet"
     ;;
   /*)
     # Absolute path: use as-is
