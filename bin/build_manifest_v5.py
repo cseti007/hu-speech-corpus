@@ -92,11 +92,33 @@ from pathlib import Path
 _PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 _WS_RE = re.compile(r"\s+")
 _NUM_STANDALONE_RE = re.compile(r"\b\d+\b")
+# Hungarian uses COMMA as the decimal separator: "5,5", "3,14", "0,5".
+# num2words(float) produces the proper Hungarian decimal expansion:
+#   5.5  → "öt egész öt tized"
+#   3.14 → "három egész tizennégy század"
+_NUM_DECIMAL_RE = re.compile(r"\b(\d+),(\d+)\b")
 # Suffixed numerals like "10-es", "2024-es", "5-ös" — the suffix expresses
 # Hungarian morphology that attaches to the number's word form.
 _NUM_SUFFIXED_RE = re.compile(
     r"\b(\d+)-([a-záéíóöőúüű]+)\b",
     flags=re.UNICODE,
+)
+
+# Symbols that have a well-defined Hungarian spelling. The punct strip
+# would otherwise drop them silently, losing the word an ASR model would
+# emit (e.g. "100%" must produce "száz százalék", not just "száz").
+# Spaces are baked into the replacement so adjacent digits / words get
+# detached cleanly.
+_SYMBOL_REPLACEMENTS = (
+    ("%", " százalék "),
+    ("‰", " ezrelék "),
+    ("€", " euró "),
+    ("$", " dollár "),
+    ("&", " és "),
+    ("+", " plusz "),
+    ("=", " egyenlő "),
+    ("§", " paragrafus "),
+    ("°", " fok "),
 )
 
 
@@ -136,20 +158,49 @@ def _expand_standalone(match: "re.Match[str]") -> str:
     return word if word is not None else match.group(0)
 
 
+def _expand_decimal(match: "re.Match[str]") -> str:
+    """Expand "5,5" → "öt egész öt tized", "3,14" → "három egész tizennégy század".
+
+    Hungarian uses comma as the decimal separator. num2words accepts floats
+    and produces the proper Hungarian decimal phrasing."""
+    try:
+        from num2words import num2words
+    except ImportError:
+        return match.group(0)
+    whole = match.group(1)
+    frac = match.group(2)
+    try:
+        return num2words(float(f"{whole}.{frac}"), lang="hu")
+    except Exception:
+        return match.group(0)
+
+
 def normalize_hu(text: str | None) -> str | None:
     if not text:
         return text
     text = unicodedata.normalize("NFC", text)
     text = text.lower()
-    # Order matters: suffixed numerals FIRST so the standalone regex doesn't
-    # rewrite the digit portion of "10-es" before we get to it.
+    # Order matters: suffixed numerals FIRST so the standalone/decimal
+    # regexes don't rewrite the digit portion of "10-es" before we get
+    # to it. Decimals before integers so "5,5" is grabbed whole instead
+    # of as two separate "5"s.
     text = _NUM_SUFFIXED_RE.sub(_expand_suffixed, text)
+    text = _NUM_DECIMAL_RE.sub(_expand_decimal, text)
     text = _NUM_STANDALONE_RE.sub(_expand_standalone, text)
+    # Spell out symbols BEFORE the catch-all punct strip drops them.
+    # "100%" → "száz százalék", not just "száz".
+    for sym, word in _SYMBOL_REPLACEMENTS:
+        text = text.replace(sym, word)
     # Hyphens → spaces (preserve word boundaries before the catch-all punct
     # strip). E.g. "kétezer-tíz" → "kétezer tíz" so token-level WER matches
     # ASR output that emits the same number as two words.
     text = text.replace("-", " ")
-    text = _PUNCT_RE.sub("", text)
+    # Replace remaining punctuation with SPACE (not empty) so that tokens
+    # separated by punctuation don't get glued together. E.g. "5,5%" after
+    # numeral expansion is "öt,öt százalék" — stripping the comma to ""
+    # would yield "ötöt százalék" (one wrong word); replacing with space
+    # yields "öt öt százalék" (two tokens, fairer for WER).
+    text = _PUNCT_RE.sub(" ", text)
     text = _WS_RE.sub(" ", text).strip()
     return text
 
@@ -273,20 +324,23 @@ def lean_row(row: dict,
 
     # Always derive hf_split for vp_labeled from the ORIGINAL parquet shard
     # path (this lookup must happen before any audio_path override).
-    # Also: override transcripts.source_caption_normalized with our own
-    # Hungarian-aware normalizer — the HF `normalized_text` field strips
-    # diacritics (e.g. "Bízom benne" → "bzom benne", losing the "í").
     if out["source"] == "voxpopuli_hu_labeled":
         hf_split = _vp_labeled_hf_split(out.get("audio_path"))
         if hf_split is not None:
             qf = dict(out.get("quality_flags") or {})
             qf["hf_split"] = hf_split
             out["quality_flags"] = qf
-        tr = dict(out.get("transcripts") or {})
-        raw = tr.get("source_caption")
-        if raw:
-            tr["source_caption_normalized"] = normalize_hu(raw)
-            out["transcripts"] = tr
+
+    # Universal: every row with `source_caption` gets a fresh
+    # `source_caption_normalized` from our `normalize_hu()`. This both
+    # generates the field where it was missing (yodas2, CV25) AND overrides
+    # broken upstream values (vp_labeled HF — see project memory
+    # `hf-voxpopuli-normalizer-broken`).
+    tr = dict(out.get("transcripts") or {})
+    raw = tr.get("source_caption")
+    if raw:
+        tr["source_caption_normalized"] = normalize_hu(raw)
+        out["transcripts"] = tr
 
     if (yodas2_chunks is not None
             and out["source"] == "yodas2_hu000"
@@ -507,7 +561,11 @@ def iter_cv25_rows(cv25_root: Path):
             "segment_end_sec": None,
             "refined_audio_path": None,
             "parquet_row_index": None,
-            "transcripts": ({"source_caption": sentence} if sentence else {}),
+            "transcripts": (
+                {"source_caption": sentence,
+                 "source_caption_normalized": normalize_hu(sentence)}
+                if sentence else {}
+            ),
             "language": "hu",
             "license": "CC0-1.0",
             "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
