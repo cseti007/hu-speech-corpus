@@ -71,21 +71,84 @@ from pathlib import Path
 #      "indított" → "indtott", "biztosít" → "biztost"
 #   2) Expands numerals to ENGLISH words in Hungarian text:
 #      "A magyar kormány 2010 től" → "a magyar kormány two thousand and ten től"
-# Use raw_text + this normalizer instead. Our normalizer:
-#   - NFC normalize (combining marks → composed)
-#   - Lowercase
-#   - Drop punctuation but preserve letters / digits / whitespace
-#   - Collapse repeated whitespace
-# Hungarian diacritics (á é í ó ö ő ú ü ű) are letters in Unicode → preserved.
+#
+# Vendored from /home/cseti/data2/Develop/Github-cseti/asr-eval-toolkit
+# (`common.normalize_text` + `normalize_numbers`) with two improvements:
+#   - Unicode-aware punctuation strip (re `[^\w\s]` instead of ASCII-only
+#     `string.punctuation`) so em-dash, smart quotes, ellipsis etc. are
+#     removed too — Hungarian sources have plenty of these.
+#   - NFC normalization up front so combining marks land in a canonical
+#     composed form before downstream processing.
+#
+# Numerals are converted to HUNGARIAN words via num2words(lang='hu') —
+# this matches what an ASR model actually emits ("kétezer-tíz", not "2010"
+# and certainly not "two thousand and ten"). Suffixed numbers like "10-es"
+# are skipped because the suffix expresses Hungarian morphology that
+# num2words can't easily reproduce.
+#
+# Use this output for any ASR WER comparison: ASR consensus pillars must
+# be normalized via this same function before reference-hypothesis match.
 
 _PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 _WS_RE = re.compile(r"\s+")
+_NUM_STANDALONE_RE = re.compile(r"\b\d+\b")
+# Suffixed numerals like "10-es", "2024-es", "5-ös" — the suffix expresses
+# Hungarian morphology that attaches to the number's word form.
+_NUM_SUFFIXED_RE = re.compile(
+    r"\b(\d+)-([a-záéíóöőúüű]+)\b",
+    flags=re.UNICODE,
+)
+
+
+def _num_word(n: int) -> str | None:
+    try:
+        from num2words import num2words
+    except ImportError:
+        return None
+    try:
+        return num2words(n, lang="hu")
+    except Exception:
+        return None
+
+
+def _expand_suffixed(match: "re.Match[str]") -> str:
+    """Expand "10-es" → "tízes", "2024-es" → "kétezerhuszonnégyes".
+
+    The Hungarian word form from num2words is collapsed (drop hyphens and
+    internal spaces) before the suffix attaches, so the resulting token is
+    a single word — matching how Hungarian compound number-adjectives are
+    typically spelled."""
+    n = int(match.group(1))
+    suffix = match.group(2)
+    word = _num_word(n)
+    if word is None:
+        return match.group(0)
+    word_collapsed = word.replace("-", "").replace(" ", "")
+    return word_collapsed + suffix
+
+
+def _expand_standalone(match: "re.Match[str]") -> str:
+    """Expand "2010" → "kétezer-tíz" (keep the num2words output as-is;
+    downstream hyphen→space turns it into two tokens, matching how ASR
+    models emit standalone numbers as a sequence of words)."""
+    n = int(match.group(0))
+    word = _num_word(n)
+    return word if word is not None else match.group(0)
 
 
 def normalize_hu(text: str | None) -> str | None:
     if not text:
         return text
-    text = unicodedata.normalize("NFC", text).lower()
+    text = unicodedata.normalize("NFC", text)
+    text = text.lower()
+    # Order matters: suffixed numerals FIRST so the standalone regex doesn't
+    # rewrite the digit portion of "10-es" before we get to it.
+    text = _NUM_SUFFIXED_RE.sub(_expand_suffixed, text)
+    text = _NUM_STANDALONE_RE.sub(_expand_standalone, text)
+    # Hyphens → spaces (preserve word boundaries before the catch-all punct
+    # strip). E.g. "kétezer-tíz" → "kétezer tíz" so token-level WER matches
+    # ASR output that emits the same number as two words.
+    text = text.replace("-", " ")
     text = _PUNCT_RE.sub("", text)
     text = _WS_RE.sub(" ", text).strip()
     return text
