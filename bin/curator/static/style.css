@@ -213,18 +213,20 @@ h1 {
   letter-spacing: 0.04em;
   background: var(--bg-soft);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 132px;  /* below the filter bar */
-  z-index: 5;
   /* Multi-line header: long column paths (e.g. quality_flags.dnsmos_ovrl)
      wrap instead of getting cut off with an ellipsis. The drag-resize
-     handle still works on top of wrapped headers. */
+     handle still works on top of wrapped headers.
+     Note: `position: sticky` also serves as the containing block for the
+     absolutely-positioned resize handle (no separate `relative` needed). */
   white-space: normal;
   word-break: break-word;
   vertical-align: bottom;
   line-height: 1.25;
-  position: relative;  /* anchor for the resize handle */
-  padding-right: 14px; /* leave room for the handle */
+  padding-right: 14px; /* leave room for the resize handle */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  box-shadow: 0 1px 0 var(--border);
 }
 .rows-table th.sortable { cursor: pointer; user-select: none; }
 .rows-table th.sortable:hover .col-label { color: var(--accent); }
